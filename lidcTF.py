@@ -40,8 +40,8 @@ import lidc_input
 FLAGS = tf.app.flags.FLAGS
 
 # Basic model parameters.
-tf.app.flags.DEFINE_integer('batch_size', 10,
-                            """Number of images to process in a batch.""")
+#tf.app.flags.DEFINE_integer('batch_size', 10,
+#                            """Number of images to process in a batch.""")
 tf.app.flags.DEFINE_string('data_dir', './tensorflow/',
                            """Path to the TFR data directory.""")
 tf.app.flags.DEFINE_boolean('use_fp16', False,
@@ -65,6 +65,7 @@ INITIAL_LEARNING_RATE = 0.05       # Initial learning rate.
 # names of the summaries when visualizing a model.
 TOWER_NAME = 'GT970'
 
+filename = "../trfs/valLungNorm.tfrecords"
 
 
 
@@ -123,7 +124,7 @@ def _variable_with_weight_decay(name, shape, stddev, wd):
   return var
 
 
-def train_inputs():
+def train_inputs(batchsize, numepochs):
   """For now, simple inputs. Distort for training later.
   Returns:
     images: Images. 4D tensor of [batch_size, IMAGE_SIZE, IMAGE_SIZE, 2] size.
@@ -134,7 +135,9 @@ def train_inputs():
   if not FLAGS.data_dir:
     raise ValueError('Please supply a data_dir')
 #  data_dir = os.path.join(FLAGS.data_dir, '../tfrs/')
-  images, labels = lidc_input.get_input()
+    
+  filename_queue = tf.train.string_input_producer([filename], num_epochs=numepochs)
+  images, labels = lidc_input.get_input(filename_queue, batchsize)
   if FLAGS.use_fp16:
     images = tf.cast(images, tf.float16)
     labels = tf.cast(labels, tf.float16)
@@ -142,26 +145,7 @@ def train_inputs():
 
 
 
-#def distorted_inputs():
-#  """Construct distorted input for training using the Reader ops.
-#  Returns:
-#    images: Images. 4D tensor of [batch_size, IMAGE_SIZE, IMAGE_SIZE, 3] size.
-#    labels: Labels. 1D tensor of [batch_size] size.
-#  Raises:
-#    ValueError: If no data_dir
-#  """
-#  if not FLAGS.data_dir:
-#    raise ValueError('Please supply a data_dir')
-#  data_dir = os.path.join(FLAGS.data_dir, 'lidc-batches-bin')
-#  images, labels = lidc_input.distorted_inputs(data_dir=data_dir,
-#                                                  batch_size=FLAGS.batch_size)
-#  if FLAGS.use_fp16:
-#    images = tf.cast(images, tf.float16)
-#    labels = tf.cast(labels, tf.float16)
-#  return images, labels
-
-
-def inputs(eval_data):
+def inputs(eval_data, batchsize, numepochs):
   """Construct input for evaluation using the Reader ops.
   Args:
     eval_data: bool, indicating if one should use the train or eval data set.
@@ -171,9 +155,11 @@ def inputs(eval_data):
   Raises:
     ValueError: If no data_dir
   """
-  if not FLAGS.data_dir:
+  #if not FLAGS.data_dir:
    # raise ValueError('Please supply a data_dir')
-  images, labels = lidc_input.get_input()
+  
+  filename_queue = tf.train.string_input_producer([filename], num_epochs=numepochs)
+  images, labels = lidc_input.get_input(filename_queue)
   if FLAGS.use_fp16:
     images = tf.cast(images, tf.float16)
     labels = tf.cast(labels, tf.float16)
@@ -289,28 +275,6 @@ def inference(images):
     conv4 = tf.nn.dropout(conv4, 0.95)
     _activation_summary(conv4)
 
-# conv2d(input, filter,strides, padding)
-# conv2d_transpose(value, filters, output_shape, stride, padding)
-#
-#  # local3
-#  with tf.variable_scope('local3') as scope:
-#    # Move everything into depth so we can perform a single matrix multiply.
-#    reshape = tf.reshape(pool2, [FLAGS.batch_size, -1])
-#    dim = reshape.get_shape()[1].value
-#    weights = _variable_with_weight_decay('weights', shape=[dim, 384],
-#                                          stddev=0.04, wd=0.004)
-#    biases = _variable_on_cpu('biases', [384], tf.constant_initializer(0.1))
-#    local3 = tf.nn.relu(tf.matmul(reshape, weights) + biases, name=scope.name)
-#    _activation_summary(local3)
-#
-#  # local4
-#  with tf.variable_scope('local4') as scope:
-#    weights = _variable_with_weight_decay('weights', shape=[384, 192],
-#                                          stddev=0.04, wd=0.004)
-#    biases = _variable_on_cpu('biases', [192], tf.constant_initializer(0.1))
-#    local4 = tf.nn.relu(tf.matmul(local3, weights) + biases, name=scope.name)
-#    _activation_summary(local4)
-
   # softmax probabilities  # 131072
   with tf.variable_scope('softmax') as scope:
      softmax = tf.nn.softmax(conv4)
@@ -335,12 +299,12 @@ def loss(logits, labels):
   cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
       logits, labels, name='cross_entropy_per_example')
   cross_entropy_mean = tf.reduce_mean(cross_entropy, name='cross_entropy')
-  tf.add_to_collection('losses', cross_entropy_mean)
+  #tf.add_to_collection('losses', cross_entropy_mean)
 
   # The total loss is defined as the cross entropy loss plus all of the weight
   # decay terms (L2 loss).
-  return tf.add_n(tf.get_collection('losses'), name='total_loss')
-
+  #return tf.add_n(tf.get_collection('losses'), name='total_loss')
+  return cross_entropy_mean
 
 def _add_loss_summaries(total_loss):
   """Add summaries for losses in LIDC model.
@@ -366,8 +330,8 @@ def _add_loss_summaries(total_loss):
 
   return loss_averages_op
 
-
-def train(total_loss, global_step):
+def train(total_loss, learning_rate):
+#def train(total_loss, global_step):
   """Train LIDC model.
   Create an optimizer and apply to all trainable variables. Add moving
   average for all trainable variables.
@@ -378,45 +342,18 @@ def train(total_loss, global_step):
   Returns:
     train_op: op for training.
   """
-  # Variables that affect learning rate.
-  num_batches_per_epoch = NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN / FLAGS.batch_size
-  decay_steps = int(num_batches_per_epoch * NUM_EPOCHS_PER_DECAY)
 
-  # Decay the learning rate exponentially based on the number of steps.
-  lr = tf.train.exponential_decay(INITIAL_LEARNING_RATE,
-                                  global_step,
-                                  decay_steps,
-                                  LEARNING_RATE_DECAY_FACTOR,
-                                  staircase=True)
-  tf.scalar_summary('learning_rate', lr)
+  tf.scalar_summary(total_loss.op.name, total_loss)
+  # Create the gradient descent optimizer with the given learning rate.
+  optimizer = tf.train.GradientDescentOptimizer(learning_rate)
+  # Create a variable to track the global step.
+  global_step = tf.Variable(0, name='global_step', trainable=False)
+  # Use the optimizer to apply the gradients that minimize the loss
+  # (and also increment the global step counter) as a single training step.
+  train_op = optimizer.minimize(total_loss, global_step)
 
-  # Generate moving averages of all losses and associated summaries.
-  loss_averages_op = _add_loss_summaries(total_loss)
 
-  # Compute gradients.
-  with tf.control_dependencies([loss_averages_op]):
-    opt = tf.train.GradientDescentOptimizer(lr)
-    grads = opt.compute_gradients(total_loss)
 
-  # Apply gradients.
-  apply_gradient_op = opt.apply_gradients(grads, global_step=global_step)
-
-  # Add histograms for trainable variables.
-  for var in tf.trainable_variables():
-    tf.histogram_summary(var.op.name, var)
-
-  # Add histograms for gradients.
-  for grad, var in grads:
-    if grad is not None:
-      tf.histogram_summary(var.op.name + '/gradients', grad)
-
-  # Track the moving averages of all trainable variables.
-  variable_averages = tf.train.ExponentialMovingAverage(
-      MOVING_AVERAGE_DECAY, global_step)
-  variables_averages_op = variable_averages.apply(tf.trainable_variables())
-
-  with tf.control_dependencies([apply_gradient_op, variables_averages_op]):
-    train_op = tf.no_op(name='train')
 
   return train_op
 
