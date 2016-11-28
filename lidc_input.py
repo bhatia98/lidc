@@ -6,31 +6,29 @@ Created on Wed Nov 16 14:27:28 2016
 """
 
 # File to read TRFs and display images (for instance, images and segmentations)
-
 import tensorflow as tf
-#import matplotlib.pyplot as plt
 
-filename = "../trfs/valLungNorm.tfrecords"
 
-def read_files():
-    for serialized_example in tf.python_io.tf_record_iterator(filename):
-        example = tf.train.Example()
-        example.ParseFromString(serialized_example)
+def read_files(filename_queue):
+    reader = tf.TFRecordReader()
+    _, serialized_example = reader.read(filename_queue)
 
-        # traverse the Example format to get data
-        width = example.features.feature['width'].int64_list.value[0]
-        height = example.features.feature['height'].int64_list.value[0]
-        depth = example.features.feature['depth'].int64_list.value[0]
-        image = example.features.feature['image_raw'].bytes_list.value[0]
-        label = example.features.feature['label'].bytes_list.value[0]
+    features = tf.parse_single_example(
+        serialized_example,
+        # Defaults are not specified since both keys are required.
+        features={
+            'image_raw': tf.FixedLenFeature([], tf.string),
+            'label': tf.FixedLenFeature([], tf.string),
+    })
 
-        im = tf.decode_raw(image,tf.float32)
-        lbl = tf.decode_raw(label,tf.uint8)  
-        image = tf.reshape(im,[depth,height,width])
-        label = tf.reshape(lbl,[height,width])
-        # convert from [depth,height,width] to [height,width,depth]
-        image = tf.transpose(image,[1,2,0])
-        
+    im = tf.decode_raw(features['image_raw'],tf.float32)
+    lbl = tf.decode_raw(features['label'],tf.uint8)
+    
+    image = tf.reshape(im,[2,256,256])
+    label = tf.reshape(lbl,[256,256])
+#    # convert from [depth,height,width] to [height,width,depth]
+    image = tf.transpose(image,[1,2,0])   
+    
     return image, label
 
     
@@ -46,16 +44,10 @@ def generate_batch(image, label, min_queue_ex, batchsize):
     return images, labels
     
 
-#with tf.Session() as sess: 
-
-def get_input():
-    min_queue_examples = 500    
-    batch_size = 10
+def get_input(filename_q, batch_size):
+    min_queue_examples = 400    
+    #batch_size = 10
     # initialise variables
-    i, l = read_files()
+    i, l = read_files(filename_q)
     a, b = generate_batch(i,l,min_queue_examples,batch_size)
     return a,b
-    #image = sess.run(i) # convert to numpy array (could also use eval()?)
-    #label = sess.run(l) # convert to numpy array
-    #plt.imshow(image[:,:,0]) # plot the CT image [1,:,:] for MIP
-    #plt.imshow(label)

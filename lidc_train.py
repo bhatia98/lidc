@@ -24,8 +24,12 @@ FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_string('train_dir', '/tmp/lidc/',
                            """Directory where to write event logs """
                            """and checkpoint.""")
-tf.app.flags.DEFINE_integer('max_steps', 1000000,
+tf.app.flags.DEFINE_integer('max_steps', 10,
                             """Number of batches to run.""")
+tf.app.flags.DEFINE_integer('batch_size', 1,
+                            """Batch size.""")                         
+tf.app.flags.DEFINE_integer('num_epochs', 1,
+                            """Number of epochs.""")                                     
 tf.app.flags.DEFINE_boolean('log_device_placement', False,
 """Whether to log device placement.""")
 
@@ -34,11 +38,11 @@ tf.app.flags.DEFINE_boolean('log_device_placement', False,
 def train():
   """Train LIDC for a number of steps."""
   with tf.Graph().as_default():
-    global_step = tf.Variable(0, trainable=False)
 
     # Get images and labels for LUNA.
-    images, labels = lidcTF.train_inputs()
-
+    images, labels = lidcTF.train_inputs(FLAGS.batch_size,FLAGS.num_epochs)
+                            
+                            
     # Build a Graph that computes the logits predictions from the
     # inference model.
     logits = lidcTF.inference(images)
@@ -48,52 +52,51 @@ def train():
 
     # Build a Graph that trains the model with one batch of examples and
     # updates the model parameters.
-    train_op = lidcTF.train(loss, global_step)
-
-    # Create a saver.
-    saver = tf.train.Saver(tf.all_variables())
-
-    # Build the summary operation based on the TF collection of Summaries.
-    summary_op = tf.merge_all_summaries()
-
-    # Build an initialization operation to run below.
-    init = tf.initialize_all_variables()
-
+    train_op = lidcTF.train(loss, 0.02)
+    
+    
+    init = tf.group(tf.initialize_all_variables(),
+                       tf.initialize_local_variables())
     # Start running operations on the Graph.
     sess = tf.Session(config=tf.ConfigProto(
         log_device_placement=FLAGS.log_device_placement))
     sess.run(init)
 
-    # Start the queue runners.
-    tf.train.start_queue_runners(sess=sess)
+    coord = tf.train.Coordinator()
+    # Start queue runners
+    threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 
-    summary_writer = tf.train.SummaryWriter(FLAGS.train_dir, sess.graph)
+    try:
+      step = 0
+      while not coord.should_stop():
+          print(step)
+          start_time = time.time()
 
-    for step in xrange(FLAGS.max_steps):
-      start_time = time.time()
-      _, loss_value = sess.run([train_op, loss])
-      duration = time.time() - start_time
+          # Run one step of the model.  The return values are
+          # the activations from the `train_op` (which is
+          # discarded) and the `loss` op.  To inspect the values
+          # of your ops or variables, you may include them in
+          # the list passed to sess.run() and the value tensors
+          # will be returned in the tuple from the call.
+          _, loss_value = sess.run([train_op, loss])
 
-      assert not np.isnan(loss_value), 'Model diverged with loss = NaN'
+          duration = time.time() - start_time
 
-      if step % 10 == 0:
-        num_examples_per_step = FLAGS.batch_size
-        examples_per_sec = num_examples_per_step / duration
-        sec_per_batch = float(duration)
+          # Print an overview fairly often.
+          if step % 100 == 0:
+            print('Step %d: loss = %.2f (%.3f sec)' % (step, loss_value,
+                                                     duration))
+          step += 1
+    except tf.errors.OutOfRangeError:
+      print('Done training for %d epochs, %d steps.' % (FLAGS.num_epochs, step))
+    finally:
+      # When done, ask the threads to stop.
+      coord.request_stop()
 
-        format_str = ('%s: step %d, loss = %.2f (%.1f examples/sec; %.3f '
-                      'sec/batch)')
-        print (format_str % (datetime.now(), step, loss_value,
-                             examples_per_sec, sec_per_batch))
+      # Wait for threads to finish.
+      coord.join(threads)
+      sess.close()
 
-      if step % 100 == 0:
-        summary_str = sess.run(summary_op)
-        summary_writer.add_summary(summary_str, step)
-
-      # Save the model checkpoint periodically.
-      if step % 1000 == 0 or (step + 1) == FLAGS.max_steps:
-        checkpoint_path = os.path.join(FLAGS.train_dir, 'model.ckpt')
-        saver.save(sess, checkpoint_path, global_step=step)
 
 
 def main(argv=None):  # pylint: disable=unused-argument
