@@ -25,15 +25,11 @@ Summary of available functions:
 """
 # pylint: disable=missing-docstring
 
-
-
-import os
 import re
-import sys
-import tarfile
+import numpy as np
 
-from six.moves import urllib
 import tensorflow as tf
+from math import ceil
 
 import lidc_input
 
@@ -65,7 +61,7 @@ INITIAL_LEARNING_RATE = 0.05       # Initial learning rate.
 # names of the summaries when visualizing a model.
 TOWER_NAME = 'GT970'
 
-filename = "../trfs/valLungNorm.tfrecords"
+filename = "../trfs/trainLungNorm.tfrecords"
 
 
 
@@ -124,6 +120,26 @@ def _variable_with_weight_decay(name, shape, stddev, wd):
   return var
 
 
+def _deconv_filler(shape):
+    width = shape[0]
+    height = width
+    f=ceil(width/2.0)
+    c=(2*f-1-f%2)/(2.0*f)
+    bilinear = np.zeros([width,height])
+    for x in range(width):
+        for y in range(height):
+            value = (1-abs(x/f-c))*(1-abs(y/f-c))
+            bilinear[x,y]=value
+    
+    weights = np.zeros(shape)
+    for i in range(shape[2]):
+        weights[:,:,i,i] = bilinear
+    
+    init = tf.constant_initializer(value=weights,dtype=tf.float32)
+    filler = tf.get_variable(name="upscale",initializer=init,shape=weights.shape)
+    
+    return filler
+
 def train_inputs(batchsize, numepochs):
   """For now, simple inputs. Distort for training later.
   Returns:
@@ -142,7 +158,6 @@ def train_inputs(batchsize, numepochs):
     images = tf.cast(images, tf.float16)
     labels = tf.cast(labels, tf.float16)
   return images, labels
-
 
 
 def inputs(eval_data, batchsize, numepochs):
@@ -195,10 +210,6 @@ def inference(images):
   # pool1
   pool1 = tf.nn.max_pool(conv1, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1],
                          padding='SAME', name='pool1')
-  # norm1 
-  #norm1 = tf.nn.lrn(pool1, 4, bias=1.0, alpha=0.001 / 9.0, beta=0.75,
-   #                 name='norm1')
-                         #128
 
   # conv2
   with tf.variable_scope('conv2') as scope:
@@ -213,9 +224,6 @@ def inference(images):
     conv2 = tf.nn.dropout(conv2, 0.95)
     _activation_summary(conv2)
 
-  # norm2
-  #norm2 = tf.nn.lrn(conv2, 4, bias=1.0, alpha=0.001 / 9.0, beta=0.75,
-  #                  name='norm2')
   # pool2
   pool2 = tf.nn.max_pool(conv2, ksize=[1, 2, 2, 1],
                          strides=[1, 2, 2, 1], padding='SAME', name='pool2')
@@ -235,10 +243,8 @@ def inference(images):
     
   # deconv 1
   with tf.variable_scope('deconv1') as scope:
-    kernel = _variable_with_weight_decay('weights',
-                                         shape=[3, 3, 64, 128],
-                                         stddev=5e-2,
-                                         wd=0.0)
+    filter_shape = [4, 4, 64, 128]
+    kernel = _deconv_filler(filter_shape)
     output_shape = [FLAGS.batch_size, 128, 128, 64]                                  
     conv = tf.nn.conv2d_transpose(conv3, kernel, output_shape, [1, 2, 2, 1])
     biases = _variable_on_cpu('biases', [64], tf.constant_initializer(0.1))
@@ -249,10 +255,8 @@ def inference(images):
     
   # deconv 2
   with tf.variable_scope('deconv2') as scope:
-    kernel = _variable_with_weight_decay('weights',
-                                         shape=[3, 3, 32, 64],
-                                         stddev=5e-2,
-                                         wd=0.0)
+    filter_shape = [4, 4, 32, 64]
+    kernel = _deconv_filler(filter_shape)                                    
     output_shape = [FLAGS.batch_size, 256, 256, 32]                                     
     conv = tf.nn.conv2d_transpose(deconv1, kernel, output_shape, [1, 2, 2, 1])
     biases = _variable_on_cpu('biases', [32], tf.constant_initializer(0.1))
@@ -299,11 +303,7 @@ def loss(logits, labels):
   cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
       logits, labels, name='cross_entropy_per_example')
   cross_entropy_mean = tf.reduce_mean(cross_entropy, name='cross_entropy')
-  #tf.add_to_collection('losses', cross_entropy_mean)
 
-  # The total loss is defined as the cross entropy loss plus all of the weight
-  # decay terms (L2 loss).
-  #return tf.add_n(tf.get_collection('losses'), name='total_loss')
   return cross_entropy_mean
 
 def _add_loss_summaries(total_loss):
